@@ -11,6 +11,14 @@ use serde_json;
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize)]
 #[derive(Debug)]
+struct ErrorResponse {
+    __type: String,
+    message: String,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct NewDeviceMetadata {
     pub DeviceGroupKey: String,
     pub DeviceKey: String,
@@ -68,29 +76,27 @@ pub fn respond_to_auth_challenge(dispatcher: &Client, region: &Region, params: R
     request.set_payload(Some(payload.into_bytes()));
 
     let mut response = try!(dispatcher.dispatch(&request));
+    let mut body: Vec<u8> = Vec::new();
+    response.body.read_to_end(&mut body)?;
+    let body_str = String::from_utf8_lossy(&body);
+    debug!("RespondToAuthChallengeResponse {}", body_str);
+
     match response.status {
         StatusCode::Ok => {
-            let mut body: Vec<u8> = Vec::new();
-            response.body.read_to_end(&mut body)?;
-            let body_str = String::from_utf8_lossy(&body);
             Ok(serde_json::from_str::<RespondToAuthChallengeResponse>(body_str.as_ref())?)
         }
         _ => {
-            let mut body: Vec<u8> = Vec::new();
-            response.body.read_to_end(&mut body)?;
-            /*
-               if (errChallenge && errChallenge.code === 'ResourceNotFoundException' &&
-               errChallenge.message.toLowerCase().indexOf('device') !== -1) {
-               challengeResponses.DEVICE_KEY = null;
-               this.deviceKey = null;
-               this.randomPassword = null;
-               this.deviceGroupKey = null;
-               this.clearCachedDeviceKeyAndPassword();
-               return respondToAuthChallenge(challenge, challengeCallback);
-               }
-               */
-            let body_str = String::from_utf8_lossy(&body);
-            Err(Error::BadResponseError(body_str.as_ref().to_string()))
+            let err_response = serde_json::from_str::<ErrorResponse>(body_str.as_ref())?;
+            match &err_response.__type[..] {
+                "NotAuthorizedException" => Err(Error::NotAuthorizedError(err_response.message.to_owned())),
+                "ResourceNotFoundException" => {
+                    if err_response.message.contains("device") {
+                        // sign out here
+                    }
+                    Err(Error::ResourceNotFoundError(err_response.message.to_owned()))
+                },
+                _ => Err(Error::BadResponseError(body_str.as_ref().to_string())),
+            }
         }
     }
 }

@@ -10,6 +10,14 @@ use serde_json;
 
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize)]
+#[derive(Debug)]
+struct ErrorResponse {
+    __type: String,
+    message: String,
+}
+
+#[allow(non_snake_case)]
+#[derive(Serialize, Deserialize)]
 pub struct AuthParameters {
     pub USERNAME: String,
     pub SRP_A: String,
@@ -51,17 +59,22 @@ pub fn initiate_auth(dispatcher: &Client, region: &Region, params: InitiateAuthP
     request.set_payload(Some(payload.into_bytes()));
 
     let mut response = try!(dispatcher.dispatch(&request));
+    let mut body: Vec<u8> = Vec::new();
+    response.body.read_to_end(&mut body)?;
+    let body_str = String::from_utf8_lossy(&body);
+    debug!("InitiateAuthResponse {}", body_str);
+
     match response.status {
         StatusCode::Ok => {
-            let mut body: Vec<u8> = Vec::new();
-            response.body.read_to_end(&mut body)?;
-            let body_str = String::from_utf8_lossy(&body);
             Ok(serde_json::from_str::<InitiateAuthResponse>(body_str.as_ref())?)
         }
         _ => {
-            let mut body: Vec<u8> = Vec::new();
-            response.body.read_to_end(&mut body)?;
-            Err(Error::BadResponseError(String::from_utf8_lossy(&body).as_ref().to_string()))
+            let err_response = serde_json::from_str::<ErrorResponse>(body_str.as_ref())?;
+            match &err_response.__type[..] {
+                "UserNotFoundException" => Err(Error::UserNotFoundError(err_response.message.to_owned())),
+                "ResourceNotFoundException" => Err(Error::ResourceNotFoundError(err_response.message.to_owned())),
+                _ => Err(Error::BadResponseError(body_str.as_ref().to_string())),
+            }
         }
     }
 }

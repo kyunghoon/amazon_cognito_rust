@@ -221,9 +221,6 @@ impl<S: Storage> CognitoUser<S> {
      * @returns {void}
      */
     pub fn authenticate_user<D: AuthDelegate>(&self, auth_details: &AuthDetails, delegate: &D) -> Result<(), Error> {
-        self.authenticate_user_helper(auth_details, delegate)
-    }
-    fn authenticate_user_helper<D: AuthDelegate>(&self, auth_details: &AuthDetails, delegate: &D) -> Result<(), Error> {
         let split = &self.user_pool_id.split("_").collect::<Vec<_>>();
         if split.len() != 2 {
             return Err(Error::IllegalParameterError(format!("invalid user pool id format '{}'", self.user_pool_id).to_string()))

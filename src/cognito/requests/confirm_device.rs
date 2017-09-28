@@ -40,18 +40,17 @@ pub fn confirm_device(dispatcher: &Client, region: &Region, params: ConfirmDevic
     request.set_payload(Some(payload.into_bytes()));
 
     let mut response = try!(dispatcher.dispatch(&request));
+    let mut body: Vec<u8> = Vec::new();
+    response.body.read_to_end(&mut body)?;
+    let body_str = String::from_utf8_lossy(&body);
+    debug!("ConfirmDevice {}", body_str);
 
     match response.status {
         StatusCode::Ok => {
-            let mut body: Vec<u8> = Vec::new();
-            response.body.read_to_end(&mut body)?;
-            let body_str = String::from_utf8_lossy(&body);
             Ok(serde_json::from_str::<ConfirmDeviceResponse>(body_str.as_ref())?)
         }
         _ => {
-            let mut body: Vec<u8> = Vec::new();
-            response.body.read_to_end(&mut body)?;
-            Err(Error::BadResponseError(String::from_utf8_lossy(&body).as_ref().to_string()))
+            Err(Error::BadResponseError(body_str.as_ref().to_string()))
         }
     }
 }
