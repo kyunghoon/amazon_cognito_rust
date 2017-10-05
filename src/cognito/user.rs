@@ -77,7 +77,7 @@ pub trait AuthDelegate {
  */
 fn get_now_string() -> String {
     let utc: DateTime<Utc> = Utc::now();
-    utc.format("%a %b %e %H:%M:%S UTC %Y").to_string()
+    utc.format("%a %b %-d %H:%M:%S UTC %Y").to_string()
 }
 
 pub struct CognitoUser<S: Storage> {
