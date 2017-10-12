@@ -3,6 +3,7 @@ use hyper::status::StatusCode;
 use rusoto_core::SignedRequest;
 use rusoto_core::{DispatchSignedRequest, Region};
 use std::collections::BTreeMap;
+use super::respond_to_auth_challenge::AuthenticationResult;
 
 use ::error::Error;
 use tools::DEFAULT_USER_AGENT;
@@ -17,10 +18,12 @@ struct ErrorResponse {
 }
 
 #[allow(non_snake_case)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AuthParameters {
-    pub USERNAME: String,
-    pub SRP_A: String,
+    pub REFRESH_TOKEN: Option<String>,
+    pub DEVICE_KEY: Option<String>,
+    pub USERNAME: Option<String>,
+    pub SRP_A: Option<String>,
 }
 
 #[allow(non_snake_case)]
@@ -29,7 +32,7 @@ pub struct InitiateAuthParams {
     pub AuthFlow: String,
     pub ClientId: String,
     pub AuthParameters: AuthParameters,
-    pub ClientMetadata: BTreeMap<String, String>,
+    pub ClientMetadata: Option<BTreeMap<String, String>>,
 }
 
 #[allow(non_snake_case)]
@@ -46,6 +49,7 @@ pub struct InitiateAuthChallengeParameters {
 pub struct InitiateAuthResponse {
     ChallengeName: String,
     pub ChallengeParameters: InitiateAuthChallengeParameters,
+    pub AuthenticationResult: Option<AuthenticationResult>,
 }
 
 pub fn initiate_auth(dispatcher: &Client, region: &Region, params: InitiateAuthParams) -> Result<InitiateAuthResponse, Error> {
@@ -72,6 +76,7 @@ pub fn initiate_auth(dispatcher: &Client, region: &Region, params: InitiateAuthP
             let err_response = serde_json::from_str::<ErrorResponse>(body_str.as_ref())?;
             match &err_response.__type[..] {
                 "UserNotFoundException" => Err(Error::UserNotFoundError(err_response.message.to_owned())),
+                "NotAuthorizedException" => Err(Error::NotAuthorizedError(err_response.message.to_owned())), // clear cached tokens
                 "ResourceNotFoundException" => Err(Error::ResourceNotFoundError(err_response.message.to_owned())),
                 _ => Err(Error::BadResponseError(body_str.as_ref().to_string())),
             }

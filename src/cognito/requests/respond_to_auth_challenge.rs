@@ -32,7 +32,7 @@ pub struct AuthenticationResult {
     pub ExpiresIn: usize,
     pub IdToken: String,
     pub NewDeviceMetadata: Option<NewDeviceMetadata>,
-    pub RefreshToken: String,
+    pub RefreshToken: Option<String>,
     pub TokenType: String,
 }
 

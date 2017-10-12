@@ -64,7 +64,7 @@ impl CognitoUserPool {
 
 pub trait Storage {
     fn get_item(&self, _key: &str) -> Option<String>;
-    fn set_item(&self, _key: &str, _val: &str);
+    fn set_item(&self, _key: &str, _val: Option<&str>);
 }
 
 pub trait AuthDelegate {
@@ -113,6 +113,67 @@ impl<S: Storage> CognitoUser<S> {
         }
     }
 
+    fn get_username(&self) -> Option<String> {
+        if let Some(username) = self.username.borrow().clone() {
+            Some(username)
+        } else {
+            let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+            let last_user_key = format!("{}.LastAuthUser", key_prefix);
+            self.storage.borrow().get_item(&last_user_key)
+        }
+    }
+
+      /**
+	   * This uses the refreshToken to retrieve a new session
+	   * @param {CognitoRefreshToken} refreshToken A previous session's refresh token.
+	   * @param {nodeCallback<CognitoUserSession>} callback Called on success or error.
+	   * @returns {void}
+	   */
+
+    pub fn refresh_session(&self, refresh_token: &str) -> Result<CognitoUserSession, Error> {
+        let device_key = if let Some(username) = self.get_username() {
+            *self.username.borrow_mut() = Some(username.to_owned());
+            let key_prefix = format!("CognitoIdentityServiceProvider.{}.{}", self.pool.get_client_id(), self.username.borrow_mut().clone().unwrap());
+            let device_key_key = format!("{}.deviceKey", key_prefix);
+            if let Some(device_key) = self.storage.borrow().get_item(&device_key_key) {
+                *self.device_key.borrow_mut() = Some(device_key.to_owned());
+                Some(device_key)
+            } else { None }
+        } else { None };
+
+        let auth_parameters = AuthParameters {
+            REFRESH_TOKEN: Some(refresh_token.to_owned()),
+            DEVICE_KEY: device_key,
+            SRP_A: None,
+            USERNAME: None,
+        };
+
+        let auth_result = match initiate_auth(&self.dispatcher, &self.region, InitiateAuthParams {
+            AuthFlow: "REFRESH_TOKEN_AUTH".to_owned(),
+            AuthParameters: auth_parameters,
+            ClientId: self.pool.get_client_id().to_string(),
+            ClientMetadata: None }) {
+            Err(Error::NotAuthorizedError(err)) => {
+                self.clear_cached_tokens();
+                Err(Error::NotAuthorizedError(err))
+            },
+            Err(err) => Err(err),
+            Ok(auth_result) => Ok(auth_result)
+        }?;
+
+        let mut authentication_result = auth_result.AuthenticationResult.ok_or(Error::RuntimeError("invalid refresh token response".to_owned()))?;
+        if authentication_result.RefreshToken.is_none() {
+            authentication_result.RefreshToken = Some(refresh_token.to_owned());
+        }
+
+        let session = self.get_cognito_user_session(&authentication_result);
+        *self.sign_in_user_session.borrow_mut() = Some(session.clone());
+
+        self.cache_tokens();
+
+        Ok(session)
+    }
+
     /**
      * This is used to save the session tokens to local storage
      * @returns {void}
@@ -127,43 +188,74 @@ impl<S: Storage> CognitoUser<S> {
 
         let ref storage = *(*self.storage).borrow_mut();
         let ref session = *self.sign_in_user_session.borrow();
-        storage.set_item(&id_token_key, session.as_ref().unwrap().id_token.get_jwt_token());
-        storage.set_item(&access_token_key, session.as_ref().unwrap().access_token.get_jwt_token());
-        storage.set_item(&refresh_token_key, session.as_ref().unwrap().refresh_token.get_token());
-        storage.set_item(&last_user_key, &username);
+        storage.set_item(&id_token_key, Some(session.as_ref().unwrap().id_token.get_jwt_token()));
+        storage.set_item(&access_token_key, Some(session.as_ref().unwrap().access_token.get_jwt_token()));
+        storage.set_item(&refresh_token_key, Some(&session.as_ref().unwrap().refresh_token.get_token().unwrap_or("".to_owned())));
+        storage.set_item(&last_user_key, Some(&username));
     }
 
-    pub fn access_token(&self) -> Result<String, Error> {
-        if let Some(username) = self.username.borrow().clone() {
+    /**
+      * This is used to clear the session tokens from local storage
+      * @returns {void}
+      */
+
+    pub fn clear_cached_tokens(&self) {
+        if let Some(username) = self.get_username() {
             let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+            let id_token_key = format!("{}.{}.idToken", key_prefix, username);
+            let access_token_key = format!("{}.{}.accessToken", key_prefix, username);
+            let refresh_token_key = format!("{}.{}.refreshToken", key_prefix, username);
+            let last_user_key = format!("{}.LastAuthUser", key_prefix);
+
+            let ref storage = *(*self.storage).borrow_mut();
+            storage.set_item(&id_token_key, None);
+            storage.set_item(&access_token_key, None);
+            storage.set_item(&refresh_token_key, None);
+            storage.set_item(&last_user_key, None);
+        }
+    }
+
+
+    pub fn access_token(&self) -> Result<String, Error> {
+        let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+        if let Some(username) = self.get_username() {
             let token_key = format!("{}.{}.accessToken", key_prefix, username);
             if let Some(item) = self.storage.borrow().get_item(&token_key) {
                 return Ok(item);
+            } else  {
+                Err(Error::RuntimeError(format!("failed to get access token '{}'", token_key)))
             }
+        } else {
+            Err(Error::RuntimeError(format!("failed to get username")))
         }
-        Err(Error::RuntimeError("failed to get access token".to_string()))
     }
 
     pub fn id_token(&self) -> Result<String, Error> {
-        if let Some(username) = self.username.borrow().clone() {
-            let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+        let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+        if let Some(username) = self.get_username() {
             let token_key = format!("{}.{}.idToken", key_prefix, username);
             if let Some(item) = self.storage.borrow().get_item(&token_key) {
                 return Ok(item);
+            } else  {
+                Err(Error::RuntimeError(format!("failed to get id token '{}'", token_key)))
             }
+        } else {
+            Err(Error::RuntimeError(format!("failed to get username")))
         }
-        Err(Error::RuntimeError("failed to get id token".to_string()))
     }
 
     pub fn refresh_token(&self) -> Result<String, Error> {
-        if let Some(username) = self.username.borrow().clone() {
-            let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+        let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
+        if let Some(username) = self.get_username() {
             let token_key = format!("{}.{}.refreshToken", key_prefix, username);
             if let Some(item) = self.storage.borrow().get_item(&token_key) {
                 return Ok(item);
+            } else  {
+                Err(Error::RuntimeError(format!("failed to get refresh token '{}'", token_key)))
             }
+        } else {
+            Err(Error::RuntimeError(format!("failed to get username")))
         }
-        Err(Error::RuntimeError("failed to get refresh token".to_string()))
     }
 
     /**
@@ -180,11 +272,9 @@ impl<S: Storage> CognitoUser<S> {
 
         let ref storage = *(*self.storage).borrow_mut();
         let ref device_key = *self.device_key.borrow();
-        storage.set_item(&device_key_key, &device_key.as_ref().unwrap());
-        let ref random_password = *self.random_password.borrow();
-        storage.set_item(&random_password_key, &random_password.as_ref().unwrap());
-        let ref device_group_key = *self.device_group_key.borrow();
-        storage.set_item(&device_group_key_key, &device_group_key.as_ref().unwrap());
+        storage.set_item(&device_key_key, Some(&device_key.as_ref().unwrap()));
+        storage.set_item(&random_password_key, Some(&self.random_password.borrow().to_owned().unwrap()));
+        storage.set_item(&device_group_key_key, Some(&self.device_group_key.borrow().to_owned().unwrap()));
     }
 
     /**
@@ -235,11 +325,13 @@ impl<S: Storage> CognitoUser<S> {
         let initiate_auth: InitiateAuthResponse = initiate_auth(&self.dispatcher, &self.region, InitiateAuthParams {
             AuthFlow: self.authentication_flow_type.to_string(),
             AuthParameters: AuthParameters {
-                SRP_A: large_a_result.to_str_radix(16),
-                USERNAME: auth_details.get_username().to_string(),
+                SRP_A: Some(large_a_result.to_str_radix(16)),
+                USERNAME: Some(auth_details.get_username().to_string()),
+                DEVICE_KEY: None,
+                REFRESH_TOKEN: None,
             },
             ClientId: self.pool.get_client_id().to_string(),
-            ClientMetadata: auth_details.get_validation_data().clone(),
+            ClientMetadata: Some(auth_details.get_validation_data().clone()),
         })?;
 
         let challenge_parameters = initiate_auth.ChallengeParameters;

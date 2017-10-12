@@ -143,7 +143,7 @@ impl AuthHelper {
         let a = calculate_a(&self.g, &self.small_a_value, &self.n)?;
 
         {
-            let mut cache: &mut Option<BigUint> = &mut self.large_a_value.borrow_mut();
+            let cache: &mut Option<BigUint> = &mut self.large_a_value.borrow_mut();
             *cache = Some(a.clone());
         }
 

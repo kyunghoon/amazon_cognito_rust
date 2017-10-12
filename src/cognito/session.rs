@@ -1,6 +1,6 @@
 use super::requests::{AuthenticationResult};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CognitoIdToken {
     jwt_token: String,
 }
@@ -24,7 +24,7 @@ impl CognitoIdToken {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CognitoAccessToken {
     jwt_token: String,
 }
@@ -48,23 +48,23 @@ impl CognitoAccessToken {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CognitoRefreshToken {
-    jwt_token: String,
+    jwt_token: Option<String>,
 }
 
 impl CognitoRefreshToken {
-    fn new(jwt_token: &str) -> CognitoRefreshToken {
+    fn new(jwt_token: &Option<String>) -> CognitoRefreshToken {
         CognitoRefreshToken {
-            jwt_token: jwt_token.to_string()
+            jwt_token: jwt_token.to_owned()
         }
     }
-    pub fn get_token(&self) -> &str {
-        &self.jwt_token
+    pub fn get_token(&self) -> Option<String> {
+        self.jwt_token.to_owned()
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CognitoUserSession {
     pub id_token: CognitoIdToken,
     pub access_token: CognitoAccessToken,
