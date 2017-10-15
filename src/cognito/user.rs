@@ -336,12 +336,12 @@ impl<S: Storage> CognitoUser<S> {
 
         let challenge_parameters = initiate_auth.ChallengeParameters;
 
-        let username = challenge_parameters.USER_ID_FOR_SRP;
+        let username = challenge_parameters.USER_ID_FOR_SRP.ok_or(Error::RuntimeError("response is missing USER_ID_FOR_SRP".to_owned()))?;
         *self.username.borrow_mut() = Some(username.clone());
 
-        let server_b_value = BigUint::parse_bytes(&challenge_parameters.SRP_B.as_bytes(), 16).unwrap();
+        let server_b_value = BigUint::parse_bytes(&challenge_parameters.SRP_B.ok_or(Error::RuntimeError("response is missing SRP_B".to_owned()))?.as_bytes(), 16).unwrap();
 
-        let salt = BigUint::parse_bytes(&challenge_parameters.SALT.as_bytes(), 16).unwrap();
+        let salt = BigUint::parse_bytes(&challenge_parameters.SALT.ok_or(Error::RuntimeError("response is missing SALT".to_owned()))?.as_bytes(), 16).unwrap();
         self.get_cached_device_key_and_password();
 
         let auth_key_result = helper.get_password_authentication_key(&username, &auth_details.get_password(), &server_b_value, &salt);
@@ -350,7 +350,7 @@ impl<S: Storage> CognitoUser<S> {
 
         let date_now = get_now_string();
 
-        let secret_block = challenge_parameters.SECRET_BLOCK;
+        let secret_block = challenge_parameters.SECRET_BLOCK.ok_or(Error::RuntimeError("response is missing SECRET_BLOCK".to_owned()))?;
 
         let s_key = SigningKey::new(&digest::SHA256, &hkdf?);
         let mut s_ctx = SigningContext::with_key(&s_key);

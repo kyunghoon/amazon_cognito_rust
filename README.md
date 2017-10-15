@@ -39,6 +39,9 @@ Work in progress...
       let storage = MyStorage {};
       let user = CognitoUser::new(default_tls_client().unwrap(), &storage, USER_POOL_ID, CLIENT_ID, Region::UsEast1);
       user.authenticate_user(&AuthDetails::new(username, password, BTreeMap::new()), &MyAuthDelegate {}).unwrap();
+
+      // to refresh session
+      // user.refresh_session(refresh_token);
     }
 
 
@@ -48,6 +51,7 @@ Work in progress...
 - [x] Initiate auth
 - [x] Receives device-key, access-token
 - [x] User authentication
+- [x] Refresh session
 - [ ] New Password required
 - [ ] SMS MFS
 - [ ] Custom Challenge

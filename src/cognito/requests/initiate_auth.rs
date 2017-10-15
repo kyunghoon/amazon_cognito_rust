@@ -38,16 +38,16 @@ pub struct InitiateAuthParams {
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize)]
 pub struct InitiateAuthChallengeParameters {
-    pub SECRET_BLOCK: String,
-    pub USER_ID_FOR_SRP: String,
-    pub SRP_B: String,
-    pub SALT: String,
+    pub SECRET_BLOCK: Option<String>,
+    pub USER_ID_FOR_SRP: Option<String>,
+    pub SRP_B: Option<String>,
+    pub SALT: Option<String>,
 }
 
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize)]
 pub struct InitiateAuthResponse {
-    ChallengeName: String,
+    ChallengeName: Option<String>,
     pub ChallengeParameters: InitiateAuthChallengeParameters,
     pub AuthenticationResult: Option<AuthenticationResult>,
 }
