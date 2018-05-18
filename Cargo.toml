@@ -10,18 +10,16 @@ repository = "https://github.com/kyunghoon/amazon_cognito_rust.git"
 base64 = "0.6.0"
 chrono = "0.4.0"
 hyper = "0.10.0"
+hyper-native-tls = { git = "https://github.com/kyunghoon/hyper-native-tls.git" }
 log = "0.3.8"
 num = "0.1.40"
-ring = "0.12.1"
-rusoto_cognito_identity = "0.28.0"
-rusoto_core = "0.28.0"
+ring = { git = "https://github.com/briansmith/ring.git", branch = "master" }
+rusoto_cognito_identity = "0.31.0"
+rusoto_core = "0.31.0"
 serde = "1.0.15"
 serde_derive = "1.0.2"
 serde_json = "1.0.3"
 sha2 = "0.6.0"
-
-[dependencies.hyper-native-tls]
-git = "https://github.com/kyunghoon/hyper-native-tls.git"
 
 [lib]
 name = "amazon_cognito_rust"
