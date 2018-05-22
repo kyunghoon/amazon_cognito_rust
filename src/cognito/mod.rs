@@ -1,9 +1,11 @@
 mod helpers;
 mod user;
 pub mod tools;
-mod requests;
+pub mod requests;
 mod session;
+mod credentials;
 
 pub use self::user::{AuthDelegate, CognitoUser, AuthDetails, Storage};
 pub use self::session::CognitoUserSession;
+pub use self::credentials::{CognitoIdentityCredentials, CognitoIdentityParams};
 

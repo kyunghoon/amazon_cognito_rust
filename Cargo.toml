@@ -14,8 +14,8 @@ hyper-native-tls = { git = "https://github.com/kyunghoon/hyper-native-tls.git" }
 log = "0.3.8"
 num = "0.1.40"
 ring = { git = "https://github.com/briansmith/ring.git", branch = "master" }
-rusoto_cognito_identity = "0.31.0"
 rusoto_core = "0.31.0"
+rusoto_sts = "0.31.0"
 serde = "1.0.15"
 serde_derive = "1.0.2"
 serde_json = "1.0.3"
