@@ -1,10 +1,10 @@
 use hyper;
 use std::cell::{RefCell};
 use rusoto_core::{default_tls_client, ProvideAwsCredentials, Region, AwsCredentials, CredentialsError};
+use rusoto_sts::{Sts, StsClient, AssumeRoleWithWebIdentityRequest};
 use super::requests::{GetIdInput, get_id, GetIdError};
 use super::requests::{GetCredentialsForIdentityInput, get_credentials_for_identity, GetCredentialsForIdentityError};
 use super::requests::{GetOpenIdTokenInput, get_open_id_token, GetOpenIdTokenError};
-use rusoto_sts::{Sts, StsClient, AssumeRoleWithWebIdentityRequest, Credentials as StsCredentials};
 use chrono::{Utc, Duration, DateTime, NaiveDateTime};
 use std::collections::{HashMap, HashSet};
 use std::iter::FromIterator;
@@ -40,15 +40,12 @@ static LOCAL_STORAGE_KEY_PROVIDERS: &str = "aws.cognito.identity-providers.";
  */
 
 pub trait Refreshable {
-  fn refresh(&self) -> Result<Option<StsCredentials>, Error>;
+  fn refresh(&self) -> Result<Option<AwsCredentials>, Error>;
 }
 
 pub struct Credentials<T: Refreshable> {
     expired: RefCell<bool>,
-    expire_time: RefCell<Option<DateTime<Utc>>>,
-    access_key_id: RefCell<Option<String>>,
-    secret_access_key: RefCell<Option<String>>,
-    session_token: RefCell<Option<String>>,
+    credentials: RefCell<Option<AwsCredentials>>,
     expiry_window: i64, // the window size in seconds to attempt refreshing of credentials before the expireTime occurs.
     refreshable: T,
 }
@@ -57,24 +54,16 @@ impl<T> Credentials<T> where T: Refreshable {
   pub fn new(refreshable: T) -> Credentials<T> {
       Credentials {
           expired: RefCell::new(true),
-          expire_time: RefCell::new(None),
-          access_key_id: RefCell::new(None),
-          secret_access_key: RefCell::new(None),
-          session_token: RefCell::new(None),
+          credentials: RefCell::new(None),
           expiry_window: 15,
           refreshable,
       }
   }
 
-  fn credentials_from(&self, data: Option<StsCredentials>) -> () {
+  fn credentials_from(&self, data: Option<AwsCredentials>) -> () {
     if let Some(credentials) = data {
-      if let Some(exp) = credentials.expiration.parse::<f64>().ok() {
-        *self.expired.borrow_mut() = false;
-        *self.access_key_id.borrow_mut() = Some(credentials.access_key_id);
-        *self.secret_access_key.borrow_mut() = Some(credentials.secret_access_key);
-        *self.session_token.borrow_mut() = Some(credentials.session_token);
-        *self.expire_time.borrow_mut() = Some(DateTime::from_utc(NaiveDateTime::from_timestamp(exp as i64, 0), Utc));
-      }
+      *self.expired.borrow_mut() = false;
+      *self.credentials.borrow_mut() = Some(credentials);
     }
   }
 
@@ -85,13 +74,13 @@ impl<T> Credentials<T> where T: Refreshable {
    */
   pub fn needs_refresh(&self) -> bool {
       let adjusted_time = Utc::now() + Duration::seconds(self.expiry_window);
-      match *self.expire_time.borrow() {
-        Some(time) => adjusted_time > time,
-        None => *self.expired.borrow() || self.access_key_id.borrow().is_none() || self.secret_access_key.borrow().is_none()
+      match self.credentials.borrow().as_ref() {
+        Some(ref credentials) => adjusted_time > *credentials.expires_at(),
+        None => *self.expired.borrow(),
       }
   }
 
-  fn refresh(&self) -> Result<Option<StsCredentials>, Error> {
+  fn refresh(&self) -> Result<Option<AwsCredentials>, Error> {
     self.refreshable.refresh()
   }
 
@@ -118,28 +107,13 @@ impl<T> Credentials<T> where T: Refreshable {
 
   fn get_credentials(&self) -> Result<Option<AwsCredentials>, Error> {
     self.get()?;
-    if let Some(access_key_id) = self.access_key_id.borrow().to_owned() {
-      if let Some(secret_key) = self.secret_access_key.borrow().to_owned() {
-        if let Some(session_token) = self.session_token.borrow().to_owned() {
-          if let Some(expiration) = self.expire_time.borrow().to_owned() {
-            return Ok(Some(AwsCredentials::new(
-              access_key_id,
-              secret_key,
-              Some(session_token),
-              expiration,
-            )));
-          }
-        }
-      }
-    }
-    Ok(None)
+    Ok(self.credentials.borrow().to_owned())
   }
-
 }
 
 //////////////////////////////////
 
-struct CredentialsProvider { credentials: Option<AwsCredentials> }
+pub struct CredentialsProvider { credentials: Option<AwsCredentials> }
 impl ProvideAwsCredentials for CredentialsProvider {
     fn credentials(&self) -> Result<AwsCredentials, CredentialsError> {
         self.credentials.clone().ok_or(CredentialsError::new("failed to get aws credentials".to_owned()))
@@ -189,8 +163,6 @@ impl<'a, P> WebIdentity<'a, P> where P: ProvideAwsCredentials {
       role_arn: RefCell::new(None),
       web_identity_token: params.web_identity_token,
       service: RefCell::new(None),
-      //this.data = null;
-      //this._clientConfig = AWS.util.copy(clientConfig || {});
     }
   }
 
@@ -215,7 +187,7 @@ impl<'a, P> Refreshable for WebIdentity<'a, P> where P: ProvideAwsCredentials {
    *   @param err [Error] if an error occurred, this value will be filled
    * @see get
    */
-  fn refresh(&self) -> Result<Option<StsCredentials>, Error> {
+  fn refresh(&self) -> Result<Option<AwsCredentials>, Error> {
     self.create_clients()?;
 
     if let Some(service) = &*self.service.borrow_mut() {
@@ -228,7 +200,22 @@ impl<'a, P> Refreshable for WebIdentity<'a, P> where P: ProvideAwsCredentials {
         web_identity_token: self.web_identity_token.borrow().to_owned().unwrap(),
       };
       let data = service.assume_role_with_web_identity(&request)?;
-      Ok(data.credentials)
+      match data.credentials {
+        None => Ok(None),
+        Some(cred) => {
+          match cred.expiration.parse::<f64>().ok() {
+            None => Ok(None),
+            Some(exp) => {
+              Ok(Some(AwsCredentials::new(
+                cred.access_key_id,
+                cred.secret_access_key,
+                Some(cred.session_token),
+                DateTime::from_utc(NaiveDateTime::from_timestamp(exp as i64, 0), Utc),
+              )))
+            }
+          }
+        }
+      }
     } else {
       Ok(None)
     }
@@ -245,7 +232,7 @@ impl<'a, P> WebIdentityCredentials<'a, P> where P: ProvideAwsCredentials {
       identity: Credentials::new(WebIdentity::new(provider, params, region)),
     }
   }
-  fn refresh(&self) -> Result<Option<StsCredentials>, Error> {
+  fn refresh(&self) -> Result<Option<AwsCredentials>, Error> {
     self.identity.refresh()
   }
 }
@@ -267,19 +254,17 @@ pub struct RefreshableCognitoIdentity<'a, P: 'a + ProvideAwsCredentials, S: Stor
   region: &'a Region,
   params: CognitoIdentityParams,
   web_identity_credentials: RefCell<Option<WebIdentityCredentials<'a, P>>>,
-  //sts: RefCell<Option<StsClient<CredentialsProvider, hyper::Client>>>,
   identity_id: RefCell<Option<String>>,
 }
 
 impl<'a, P, S> RefreshableCognitoIdentity<'a, P, S> where P: ProvideAwsCredentials, S: Storage {
-  fn new(provider: &'a P, storage: Rc<RefCell<S>>, params: CognitoIdentityParams, region: &'a Region) -> RefreshableCognitoIdentity<'a, P, S> {
+  fn new(provider: &'a P, storage: Rc<RefCell<S>>, region: &'a Region, params: CognitoIdentityParams) -> RefreshableCognitoIdentity<'a, P, S> {
     let ret = RefreshableCognitoIdentity {
       provider,
       storage,
       region,
       params,
       web_identity_credentials: RefCell::new(None),
-      //sts: RefCell::new(None),
       identity_id: RefCell::new(None),
     };
     ret.load_cached_id();
@@ -311,27 +296,26 @@ impl<'a, P, S> RefreshableCognitoIdentity<'a, P, S> where P: ProvideAwsCredentia
   fn get_storage_providers(&self) -> Option<Vec<String>> {
     let pool_id = &self.params.identity_pool_id;
     let login_id = &self.params.login_id.to_owned().unwrap_or("".to_owned());
-    (*self.storage.borrow_mut()).get_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_PROVIDERS, pool_id, login_id))
-        .map(|s| s.split(",").map(String::from).collect::<Vec<_>>())
+    self.storage.borrow().get_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_PROVIDERS, pool_id, login_id)).map(|s| s.split(",").map(String::from).collect::<Vec<_>>())
   }
 
   fn set_storage_providers(&self, providers: Option<&Vec<String>>) -> () {
     let pool_id = &self.params.identity_pool_id;
     let login_id = &self.params.login_id.to_owned().unwrap_or("".to_owned());
     let value = providers.map(|ps| ps.join(","));
-    (*self.storage.borrow_mut()).set_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_PROVIDERS, pool_id, login_id), value.as_ref().map(|r| &**r));
+    self.storage.borrow().set_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_PROVIDERS, pool_id, login_id), value.as_ref().map(|r| &**r));
   }
 
   fn get_storage_id(&self) -> Option<String> {
     let pool_id = &self.params.identity_pool_id;
     let login_id = &self.params.login_id.to_owned().unwrap_or("".to_owned());
-    (*self.storage.borrow_mut()).get_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_ID, pool_id, login_id))
+    self.storage.borrow().get_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_ID, pool_id, login_id))
   }
 
   fn set_storage_id(&self, id: Option<&str>) -> () {
     let pool_id = &self.params.identity_pool_id;
     let login_id = &self.params.login_id.to_owned().unwrap_or("".to_owned());
-    (*self.storage.borrow_mut()).set_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_ID, pool_id, login_id), id);
+    self.storage.borrow().set_item(&format!("{}{}{}", LOCAL_STORAGE_KEY_ID, pool_id, login_id), id);
   }
 
   /**
@@ -392,7 +376,7 @@ impl<'a, P, S> RefreshableCognitoIdentity<'a, P, S> where P: ProvideAwsCredentia
     }
   }
 
-  fn get_credentials_for_identity(&self, identity_id: &str) -> Result<Option<StsCredentials>, Error> {
+  fn get_credentials_for_identity(&self, identity_id: &str) -> Result<Option<AwsCredentials>, Error> {
     let input = GetCredentialsForIdentityInput {
       custom_role_arn: None,
       identity_id: identity_id.to_owned(),
@@ -415,12 +399,12 @@ impl<'a, P, S> RefreshableCognitoIdentity<'a, P, S> where P: ProvideAwsCredentia
               credentials.session_token.is_none() {
               Ok(None)
             } else {
-              Ok(Some(StsCredentials {
-                  access_key_id: credentials.access_key_id.unwrap(),
-                  expiration: credentials.expiration.unwrap().to_string(),
-                  secret_access_key: credentials.secret_key.unwrap(),
-                  session_token: credentials.session_token.unwrap(),
-              }))
+              Ok(Some(AwsCredentials::new(
+                credentials.access_key_id.unwrap(),
+                credentials.secret_key.unwrap(),
+                credentials.session_token,
+                DateTime::from_utc(NaiveDateTime::from_timestamp(credentials.expiration.unwrap() as i64, 0), Utc),
+              )))
             }
           }
         }
@@ -428,7 +412,7 @@ impl<'a, P, S> RefreshableCognitoIdentity<'a, P, S> where P: ProvideAwsCredentia
     }
   }
 
-  fn get_credentials_from_sts(&self) -> Result<Option<StsCredentials>, Error> {
+  fn get_credentials_from_sts(&self) -> Result<Option<AwsCredentials>, Error> {
     let input = GetOpenIdTokenInput {
       identity_id: self.params.identity_id.borrow().to_owned().unwrap(),
       logins: self.params.logins.to_owned(),
@@ -478,7 +462,7 @@ impl<'a, P, S> Refreshable for RefreshableCognitoIdentity<'a, P, S> where P: Pro
    *   @param err [Error] if an error occurred, this value will be filled
    * @see get
    */
-  fn refresh(&self) -> Result<Option<StsCredentials>, Error> {
+  fn refresh(&self) -> Result<Option<AwsCredentials>, Error> {
     self.create_clients()?;
 
     *self.identity_id.borrow_mut() = None;
@@ -505,9 +489,9 @@ pub struct CognitoIdentityCredentials<'a, P: 'a + ProvideAwsCredentials, S: Stor
 }
   
 impl<'a, P, S> CognitoIdentityCredentials<'a, P, S> where P: ProvideAwsCredentials, S: Storage {
-  pub fn new(provider: &'a P, storage: Rc<RefCell<S>>, params: CognitoIdentityParams, region: &'a Region) -> CognitoIdentityCredentials<'a, P, S> {
+  pub fn new(provider: &'a P, storage: Rc<RefCell<S>>, region: &'a Region, params: CognitoIdentityParams) -> CognitoIdentityCredentials<'a, P, S> {
     CognitoIdentityCredentials {
-      credentials: Credentials::new(RefreshableCognitoIdentity::new(provider, storage, params, region)),
+      credentials: Credentials::new(RefreshableCognitoIdentity::new(provider, storage, region, params)),
     }
   }
 

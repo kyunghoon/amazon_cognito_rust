@@ -16,7 +16,7 @@ pub enum Error {
     DecodeError(base64::DecodeError),
     IoError(std::io::Error),
     RuntimeError(String),
-    //GetIdError(rusoto_cognito_identity::GetIdError),
+    GetUserError(cognito::requests::GetUserError),
     NotAuthorizedError(String),
     ResourceNotFoundError(String),
     UserNotFoundError(String),

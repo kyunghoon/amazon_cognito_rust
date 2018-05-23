@@ -1,4 +1,4 @@
-use rusoto_core::Region;
+use rusoto_core::{default_tls_client, AwsCredentials, Region};
 use base64::{encode, decode};
 use chrono::prelude::{DateTime, Utc};
 use hyper::Client;
@@ -8,12 +8,13 @@ use ring::hmac::{SigningKey, SigningContext};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::cell::RefCell;
-
 use ::error::Error;
 use super::helpers::AuthHelper;
 use super::requests::*;
 use super::tools::{FromHex, ToBase64, DEFAULT_USER_AGENT};
 use super::session::CognitoUserSession;
+use std::collections::HashMap;
+use super::credentials::{CognitoIdentityCredentials, CognitoIdentityParams};
 
 pub struct AuthDetails {
     username: String,
@@ -67,9 +68,11 @@ pub trait Storage {
     fn set_item(&self, _key: &str, _val: Option<&str>);
 }
 
-pub trait AuthDelegate {
-    fn on_failure(self: &Self, err: &Error);
-    fn on_success(&self, session: &CognitoUserSession, confirmation_necessary: bool);
+pub enum AuthResult {
+    Success { session: CognitoUserSession, confirmation_necessary: bool },
+    SmsMfs,
+    CustomChallenge,
+    DeviceSrpAuth,
 }
 
 /**
@@ -92,10 +95,9 @@ pub struct CognitoUser<S: Storage> {
     random_password: RefCell<Option<String>>,
     device_group_key: RefCell<Option<String>>,
     verifier_devices: RefCell<Option<String>>,
-    sign_in_user_session: RefCell<Option<CognitoUserSession>>,
 }
 
-impl<S: Storage> CognitoUser<S> {
+impl<S> CognitoUser<S> where S: Storage {
     pub fn new(dispatcher: Client, storage: Rc<RefCell<S>>, user_pool_id: &str, client_id: &str, region: Region) -> CognitoUser<S> {
         CognitoUser {
             region: region,
@@ -109,7 +111,6 @@ impl<S: Storage> CognitoUser<S> {
             random_password: RefCell::new(None),
             device_group_key: RefCell::new(None),
             verifier_devices: RefCell::new(None),
-            sign_in_user_session: RefCell::new(None),
         }
     }
 
@@ -167,9 +168,7 @@ impl<S: Storage> CognitoUser<S> {
         }
 
         let session = self.get_cognito_user_session(&authentication_result);
-        *self.sign_in_user_session.borrow_mut() = Some(session.clone());
-
-        self.cache_tokens();
+        self.cache_tokens(&session);
 
         Ok(session)
     }
@@ -178,7 +177,7 @@ impl<S: Storage> CognitoUser<S> {
      * This is used to save the session tokens to local storage
      * @returns {void}
      */
-    fn cache_tokens(&self) {
+    fn cache_tokens(&self, session: &CognitoUserSession) {
         let username = self.username.borrow().clone().unwrap();
         let key_prefix = format!("CognitoIdentityServiceProvider.{}", self.pool.get_client_id());
         let id_token_key = format!("{}.{}.idToken", key_prefix, username);
@@ -187,10 +186,9 @@ impl<S: Storage> CognitoUser<S> {
         let last_user_key = format!("{}.LastAuthUser", key_prefix);
 
         let ref storage = *(*self.storage).borrow_mut();
-        let ref session = *self.sign_in_user_session.borrow();
-        storage.set_item(&id_token_key, Some(session.as_ref().unwrap().id_token.get_jwt_token()));
-        storage.set_item(&access_token_key, Some(session.as_ref().unwrap().access_token.get_jwt_token()));
-        storage.set_item(&refresh_token_key, Some(&session.as_ref().unwrap().refresh_token.get_token().unwrap_or("".to_owned())));
+        storage.set_item(&id_token_key, Some(session.id_token.get_jwt_token()));
+        storage.set_item(&access_token_key, Some(session.access_token.get_jwt_token()));
+        storage.set_item(&refresh_token_key, Some(&session.refresh_token.get_token().unwrap_or("".to_owned())));
         storage.set_item(&last_user_key, Some(&username));
     }
 
@@ -310,7 +308,7 @@ impl<S: Storage> CognitoUser<S> {
      * @param {authSuccess} callback.onSuccess Called on success with the new session.
      * @returns {void}
      */
-    pub fn authenticate_user<D: AuthDelegate>(&self, auth_details: &AuthDetails, delegate: &D) -> Result<(), Error> {
+    pub fn authenticate_user(&self, auth_details: &AuthDetails) -> Result<AuthResult, Error> {
         let split = &self.user_pool_id.split("_").collect::<Vec<_>>();
         if split.len() != 2 {
             return Err(Error::IllegalParameterError(format!("invalid user pool id format '{}'", self.user_pool_id).to_string()))
@@ -391,7 +389,7 @@ impl<S: Storage> CognitoUser<S> {
             }
         }
 
-        self.authenticate_user_internal(&data_authenticate, &helper, delegate)
+        self.authenticate_user_internal(&data_authenticate, &helper)
     }
 
     /**
@@ -412,33 +410,36 @@ impl<S: Storage> CognitoUser<S> {
      * @param {callback} callback passed on from caller
      * @returns {void}
      */
-    fn authenticate_user_internal<D: AuthDelegate>(&self, data_authenticate: &RespondToAuthChallengeResponse, helper: &AuthHelper, delegate: &D) -> Result<(), Error> {
+    fn authenticate_user_internal(&self, data_authenticate: &RespondToAuthChallengeResponse, helper: &AuthHelper) -> Result<AuthResult, Error> {
         let challenge_name = &data_authenticate.ChallengeName;
 
         match challenge_name {
             &Some(ref name) if name == "SMS_MFS" => {
-                panic!("SMS_MFS NYI");
                 //*self.session.borrow_mut() = Some(data_authenticate.Session.unwrap());
                 //delegate.mfa_required(challenge_name, challenge_parameters);
+                Ok(AuthResult::SmsMfs)
             }
             &Some(ref name) if name == "CUSTOM_CHALLENGE" => {
-                panic!("CUSTOM_CHALLENGE NYI");
+                //panic!("CUSTOM_CHALLENGE NYI");
                 //*self.session.borrow_mut() = Some(data_authenticate.Session.unwrap());
                 //delegate.custom_challenge(challenge_parameters);
+                Ok(AuthResult::CustomChallenge)
             }
             &Some(ref name) if name == "DEVICE_SRP_AUTH" => {
-                panic!("DEVICE_SRP_AUTH NYI");
+                //panic!("DEVICE_SRP_AUTH NYI");
                 //self.get_device_response(&delegate);
+                Ok(AuthResult::DeviceSrpAuth)
             }
             _ => {
-                *self.sign_in_user_session.borrow_mut() = Some(self.get_cognito_user_session(&data_authenticate.AuthenticationResult));
-                self.cache_tokens();
+                let session = self.get_cognito_user_session(&data_authenticate.AuthenticationResult);
+                self.cache_tokens(&session);
 
                 match &data_authenticate.AuthenticationResult.NewDeviceMetadata {
                     &None => {
-                        let ref sign_in_user_session = *self.sign_in_user_session.borrow();
-                        delegate.on_success(&sign_in_user_session.as_ref().unwrap(), false);
-                        Ok(())
+                        Ok(AuthResult::Success {
+                            session,
+                            confirmation_necessary: false,
+                        })
                     }
                     &Some(ref new_device_metadata) => {
                         helper.generate_hash_device(
@@ -452,24 +453,36 @@ impl<S: Storage> CognitoUser<S> {
                         *self.random_password.borrow_mut() = Some(helper.get_random_password());
 
                         let data_confirm = confirm_device(&self.dispatcher, &self.region, ConfirmDeviceParameters {
-                            DeviceKey: new_device_metadata.DeviceKey.clone(),
-                            AccessToken: self.sign_in_user_session.borrow().as_ref().unwrap().access_token.get_jwt_token().to_string(),
+                            DeviceKey: new_device_metadata.DeviceKey.to_owned(),
+                            AccessToken: session.access_token.get_jwt_token().to_owned(),
                             DeviceSecretVerifierConfig: DeviceSecretVerifierConfig {
                                 Salt: helper.get_salt_devices().from_hex().unwrap().to_base64(),
                                 PasswordVerifier: password_verifier,
                             },
-                            DeviceName: DEFAULT_USER_AGENT.to_string(),
+                            DeviceName: DEFAULT_USER_AGENT.to_owned(),
                         })?;
 
                         *self.device_key.borrow_mut() = Some(new_device_metadata.DeviceKey.clone());
                         self.cache_device_key_and_password();
 
-                        delegate.on_success(self.sign_in_user_session.borrow().as_ref().unwrap(), data_confirm.UserConfirmationNecessary);
-
-                        Ok(())
+                        Ok(AuthResult::Success {
+                            session,
+                            confirmation_necessary: data_confirm.UserConfirmationNecessary,
+                        })
                     }
                 }
             }
+        }
+    }
+
+    pub fn get_sub(&self, access_token: &str, credentials: &AwsCredentials) -> Result<String, Error> {
+        let input = GetUserInput {
+            AccessToken: access_token.to_owned(),
+        };
+        let result = get_user(&input, self.region.to_owned(), &default_tls_client()?, &credentials)?;
+        match result.UserAttributes.iter().find(|i| i.Name == "sub") {
+            None => Err(Error::RuntimeError("failed to get user sub".to_owned())),
+            Some(attr) => Ok(attr.Value.to_owned()),
         }
     }
 }

@@ -5,7 +5,7 @@ pub mod requests;
 mod session;
 mod credentials;
 
-pub use self::user::{AuthDelegate, CognitoUser, AuthDetails, Storage};
+pub use self::user::{CognitoUser, AuthDetails, AuthResult, Storage};
 pub use self::session::CognitoUserSession;
-pub use self::credentials::{CognitoIdentityCredentials, CognitoIdentityParams};
+pub use self::credentials::{CredentialsProvider, CognitoIdentityCredentials, CognitoIdentityParams};
 
