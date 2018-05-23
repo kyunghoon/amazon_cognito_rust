@@ -1,0 +1,15 @@
+[package]
+name = "hyper-native-tls"
+version = "0.2.4"
+authors = ["Steven Fackler <sfackler@gmail.com>"]
+exclude = ["test/*"]
+license = "MIT/Apache-2.0"
+description = "native-tls support for Hyper"
+repository = "https://github.com/sfackler/hyper-native-tls"
+documentation = "https://docs.rs/hyper-native-tls/0.2.4/hyper_native_tls"
+readme = "README.md"
+
+[dependencies]
+antidote = "1.0"
+native-tls = "0.1.5"
+hyper = "0.10"

@@ -10,7 +10,7 @@ repository = "https://github.com/kyunghoon/amazon_cognito_rust.git"
 base64 = "0.6.0"
 chrono = "0.4.0"
 hyper = "0.10.0"
-hyper-native-tls = { git = "https://github.com/kyunghoon/hyper-native-tls.git" }
+hyper-native-tls = { path = "hyper-native-tls", version = "0.2.4" }
 log = "0.3.8"
 num = "0.1.40"
 ring = { git = "https://github.com/briansmith/ring.git", branch = "master" }
