@@ -13,7 +13,7 @@ hyper = "0.10.0"
 hyper-native-tls = { path = "hyper-native-tls", version = "0.2.4" }
 log = "0.3.8"
 num = "0.1.40"
-ring = { git = "https://github.com/briansmith/ring.git", branch = "master" }
+ring = { path = "ring", version = "0.13.0-alpha3" }
 rusoto_core = "0.31.0"
 rusoto_sts = "0.31.0"
 serde = "1.0.15"
